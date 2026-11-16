@@ -11,44 +11,40 @@ load_dotenv()
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB max
 
-SEGMIND_API_KEY = os.getenv("SEGMIND_API_KEY", "")
-SEGMIND_URL = "https://api.segmind.com/v1/sdxl-img2img"
+GETIMG_API_KEY = os.getenv("GETIMG_API_KEY", "")
+GETIMG_URL = "https://api.getimg.ai/v1/essential-v2/image-to-image"
 
 FURRY_STYLES = {
     "classic": {
         "label": "Классика",
         "emoji": "🦊",
         "prompt": (
-            "anthropomorphic furry fox character, fluffy fur, animal fox ears on top of head, "
-            "fox muzzle, black nose, detailed fur texture, digital furry artwork, "
-            "highly detailed, beautiful lighting, artstation trending, vibrant colors, expressive eyes"
+            "anthropomorphic furry fox character, fluffy fur, animal fox ears, cute fox snout, "
+            "detailed fur texture, beautiful digital furry art, vibrant colors, expressive eyes, masterpiece"
         ),
     },
     "wolf": {
         "label": "Волк",
         "emoji": "🐺",
         "prompt": (
-            "anthropomorphic furry wolf character, thick grey and black wolf fur, pointed wolf ears, "
-            "detailed wolf muzzle, fierce yet friendly expression, digital furry art, "
-            "cinematic lighting, sharp details, fantasy aesthetic"
+            "anthropomorphic furry wolf character, thick wolf fur, pointed wolf ears on head, "
+            "detailed wolf muzzle, sharp friendly eyes, high quality digital furry artwork, cinematic lighting"
         ),
     },
     "fox": {
         "label": "Лиса",
         "emoji": "🦊",
         "prompt": (
-            "anthropomorphic cute red fox character, orange and white fluffy fur, large pointy fox ears, "
-            "fluffy tail, fox snout, beautiful expressive eyes, high quality digital furry fanart, "
-            "warm soft lighting, smooth lineart"
+            "anthropomorphic red fox character, orange and white fluffy fur, large fluffy fox ears, "
+            "fox nose, detailed fur shading, high quality furry fanart, warm soft lighting"
         ),
     },
     "cat": {
         "label": "Кошка",
         "emoji": "🐱",
         "prompt": (
-            "anthropomorphic feline cat furry character, fluffy cat ears, whiskers, small cat nose, "
-            "feline eyes with slit pupils, soft detailed fur, anime-inspired furry art, "
-            "cute aesthetic, vibrant pastel palette, masterpiece"
+            "anthropomorphic feline cat character, soft fluffy cat ears, whiskers, small cat nose, "
+            "cat eyes with vertical pupils, cute anime furry aesthetic, soft pastel colors, masterpiece"
         ),
     },
     "dragon": {
@@ -56,39 +52,33 @@ FURRY_STYLES = {
         "emoji": "🐉",
         "prompt": (
             "anthropomorphic dragon scalie character, sleek dragon horns, iridescent scales, "
-            "reptilian slit eyes, subtle frills, epic fantasy digital art, "
-            "dramatic lighting, highly detailed scales texture, masterpiece"
+            "reptilian slit eyes, epic fantasy furry art, detailed scales texture, dramatic lighting"
         ),
     },
     "bunny": {
         "label": "Зайчик",
         "emoji": "🐰",
         "prompt": (
-            "anthropomorphic bunny rabbit character, long upright rabbit ears, soft fluffy fur, "
-            "cute bunny nose, big expressive innocent eyes, sweet pastel colors, "
-            "whimsical fantasy furry artwork, high detail"
+            "anthropomorphic cute bunny rabbit character, long rabbit ears, soft fluffy fur, "
+            "cute bunny nose, big expressive eyes, sweet pastel colors, detailed digital furry artwork"
         ),
     },
 }
 
 NEGATIVE_PROMPT = (
-    "human ears, human skin, human nose, photographic human, duplicate, watermark, signature, "
-    "text, low quality, distorted anatomy, extra limbs, bad eyes, blur, mutated, ugly, poorly drawn"
+    "human ears, human nose, photographic human skin, ugly, deformed, blurry, bad anatomy, "
+    "low quality, distorted face, extra limbs, watermark, text"
 )
 
 
 def prepare_image_b64(image_bytes: bytes) -> str:
-    """Оптимизация размера изображения под модель (макс 1024x1024, JPEG)."""
+    """Подготавливает изображение под требования GetImg.ai (макс 1024x1024, JPEG)."""
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-    
-    # SDXL лучше всего работает с размерами кратно 64 (например 1024x1024 или 768x768)
     img.thumbnail((1024, 1024), Image.LANCZOS)
     
-    # Подгоняем под кратность 64
-    w = (img.width // 64) * 64
-    h = (img.height // 64) * 64
-    w = max(512, w)
-    h = max(512, h)
+    # Кратность 64 для нейросети
+    w = max(512, (img.width // 64) * 64)
+    h = max(512, (img.height // 64) * 64)
     img = img.resize((w, h), Image.LANCZOS)
     
     buf = io.BytesIO()
@@ -97,48 +87,36 @@ def prepare_image_b64(image_bytes: bytes) -> str:
 
 
 def generate_furry_art(image_bytes: bytes, style_key: str) -> dict:
-    """Настоящий img2img через Segmind SDXL."""
-    if not SEGMIND_API_KEY or SEGMIND_API_KEY == "your_segmind_key_here":
-        return {"error": "API ключ Segmind не настроен. Добавьте SEGMIND_API_KEY в файл .env"}
+    """Настоящий Image-to-Image через GetImg.ai."""
+    if not GETIMG_API_KEY or GETIMG_API_KEY == "your_getimg_key_here":
+        return {"error": "API ключ GetImg.ai не настроен. Добавьте GETIMG_API_KEY в файл .env"}
 
     style = FURRY_STYLES.get(style_key, FURRY_STYLES["classic"])
 
     try:
-        # Подготовка фото
         img_b64 = prepare_image_b64(image_bytes)
 
-        # Параметры img2img
         payload = {
             "image": img_b64,
             "prompt": style["prompt"],
             "negative_prompt": NEGATIVE_PROMPT,
-            "samples": 1,
-            "scheduler": "dpmpp_2m",
-            "num_inference_steps": 25,
-            "guidance_scale": 7.5,
-            # strength определяет, насколько сильно меняется фото:
-            # 0.68 идеально: лицо и форма человека перерисовываются в персонажа, но сохраняется поза и композиция
-            "strength": 0.68,
-            "base64": True
+            # strength 0.65: сохраняет позу, освещение и черты фото, но трансформирует в фурри
+            "strength": 0.65,
+            "steps": 25,
+            "guidance": 7.5,
+            "output_format": "jpeg"
         }
 
         headers = {
-            "x-api-key": SEGMIND_API_KEY,
+            "Authorization": f"Bearer {GETIMG_API_KEY}",
             "Content-Type": "application/json"
         }
 
-        resp = requests.post(SEGMIND_URL, json=payload, headers=headers, timeout=120)
+        resp = requests.post(GETIMG_URL, json=payload, headers=headers, timeout=120)
 
         if resp.status_code == 200:
-            content_type = resp.headers.get("content-type", "")
-            
-            # Если вернулся JSON с base64
-            if "application/json" in content_type:
-                data = resp.json()
-                img_result_b64 = data.get("image", "")
-            else:
-                # Если вернулась чистая картинка байтами
-                img_result_b64 = base64.b64encode(resp.content).decode("utf-8")
+            data = resp.json()
+            img_result_b64 = data.get("image", "")
 
             return {
                 "success": True,
@@ -146,22 +124,22 @@ def generate_furry_art(image_bytes: bytes, style_key: str) -> dict:
                 "mime_type": "image/jpeg",
                 "style_label": style["label"],
                 "style_emoji": style["emoji"],
-                "description": "Сгенерировано на базе вашего фото (SDXL Image-to-Image)",
+                "description": "Сгенерировано строго по вашему фото (GetImg.ai Image-to-Image)",
             }
 
-        elif resp.status_code == 401 or resp.status_code == 403:
-            return {"error": "Неверный API ключ Segmind. Проверьте SEGMIND_API_KEY в файле .env"}
+        elif resp.status_code == 401:
+            return {"error": "Неверный API ключ GetImg.ai. Проверьте GETIMG_API_KEY в файле .env"}
         elif resp.status_code == 429:
-            return {"error": "Превышен лимит запросов Segmind или закончились бесплатные кредиты на сегодня."}
+            return {"error": "Лимит запросов исчерпан. Попробуйте чуть позже."}
         else:
             try:
-                err_text = resp.json().get("message", resp.text)
+                err_text = resp.json().get("error", {}).get("message", resp.text)
             except Exception:
                 err_text = resp.text
-            return {"error": f"Ошибка Segmind API ({resp.status_code}): {err_text}"}
+            return {"error": f"Ошибка GetImg.ai ({resp.status_code}): {err_text}"}
 
     except requests.exceptions.Timeout:
-        return {"error": "Таймаут — сервер Segmind не ответил вовремя. Попробуйте снова."}
+        return {"error": "Таймаут — сервис генерации не ответил за 2 минуты. Попробуйте снова."}
     except requests.exceptions.ConnectionError:
         return {"error": "Ошибка подключения к сети. Проверьте интернет."}
     except Exception as e:
@@ -203,23 +181,23 @@ def get_styles():
 
 @app.route("/health")
 def health():
-    has_key = bool(SEGMIND_API_KEY and SEGMIND_API_KEY != "your_segmind_key_here")
+    has_key = bool(GETIMG_API_KEY and GETIMG_API_KEY != "your_getimg_key_here")
     return jsonify({
         "status": "ok",
         "api_configured": has_key,
-        "engine": "Segmind SDXL Img2Img"
+        "engine": "GetImg.ai Image-to-Image"
     })
 
 
 if __name__ == "__main__":
     print("=" * 55)
-    print("  🐾 FurryArt AI — Segmind SDXL Img2Img Edition")
+    print("  🐾 FurryArt AI — GetImg.ai Image-to-Image Edition")
     print("=" * 55)
-    if not SEGMIND_API_KEY or SEGMIND_API_KEY == "your_segmind_key_here":
-        print("  ⚠️  Внимание: SEGMIND_API_KEY не установлен!")
-        print("  Получить бесплатно: https://www.segmind.com/api-keys")
+    if not GETIMG_API_KEY or GETIMG_API_KEY == "your_getimg_key_here":
+        print("  ⚠️  Внимание: GETIMG_API_KEY не установлен!")
+        print("  Получить бесплатно: https://getimg.ai/dashboard/api-keys")
     else:
-        print("  ✅  Segmind API ключ подключен!")
+        print("  ✅  GetImg.ai API ключ подключен!")
     print("=" * 55)
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host="0.0.0.0", port=port)
