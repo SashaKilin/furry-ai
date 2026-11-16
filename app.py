@@ -1,9 +1,6 @@
 import os
 import base64
 import io
-import time
-import random
-import urllib.parse
 from flask import Flask, request, jsonify, render_template
 from dotenv import load_dotenv
 from PIL import Image
@@ -12,167 +9,161 @@ import requests
 load_dotenv()
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB max
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-
-POLLINATIONS_URL = "https://image.pollinations.ai/prompt/{prompt}"
+SEGMIND_API_KEY = os.getenv("SEGMIND_API_KEY", "")
+SEGMIND_URL = "https://api.segmind.com/v1/sdxl-img2img"
 
 FURRY_STYLES = {
     "classic": {
         "label": "Классика",
         "emoji": "🦊",
-        "animal": "fox",
-        "prompt_extra": "fox furry, orange fur, fox ears, fox tail with white tip, anthropomorphic fox character",
+        "prompt": (
+            "anthropomorphic furry fox character, fluffy fur, animal fox ears on top of head, "
+            "fox muzzle, black nose, detailed fur texture, digital furry artwork, "
+            "highly detailed, beautiful lighting, artstation trending, vibrant colors, expressive eyes"
+        ),
     },
     "wolf": {
         "label": "Волк",
         "emoji": "🐺",
-        "animal": "wolf",
-        "prompt_extra": "wolf furry, grey wolf fur, pointed wolf ears, wolf snout, bushy wolf tail, anthropomorphic wolf character",
+        "prompt": (
+            "anthropomorphic furry wolf character, thick grey and black wolf fur, pointed wolf ears, "
+            "detailed wolf muzzle, fierce yet friendly expression, digital furry art, "
+            "cinematic lighting, sharp details, fantasy aesthetic"
+        ),
     },
     "fox": {
         "label": "Лиса",
         "emoji": "🦊",
-        "animal": "fox",
-        "prompt_extra": "fox furry, orange and white fox fur, large fox ears, fox muzzle, fluffy fox tail, anthropomorphic fox character",
+        "prompt": (
+            "anthropomorphic cute red fox character, orange and white fluffy fur, large pointy fox ears, "
+            "fluffy tail, fox snout, beautiful expressive eyes, high quality digital furry fanart, "
+            "warm soft lighting, smooth lineart"
+        ),
     },
     "cat": {
         "label": "Кошка",
         "emoji": "🐱",
-        "animal": "cat",
-        "prompt_extra": "neko cat furry, cat ears, cat eyes with slit pupils, whiskers, cat tail, anime style, anthropomorphic cat character",
+        "prompt": (
+            "anthropomorphic feline cat furry character, fluffy cat ears, whiskers, small cat nose, "
+            "feline eyes with slit pupils, soft detailed fur, anime-inspired furry art, "
+            "cute aesthetic, vibrant pastel palette, masterpiece"
+        ),
     },
     "dragon": {
         "label": "Дракон",
         "emoji": "🐉",
-        "animal": "dragon",
-        "prompt_extra": "dragon fursona, dragon horns, scales, reptilian eyes, dragon wings, dragon tail, fantasy style, anthropomorphic dragon character",
+        "prompt": (
+            "anthropomorphic dragon scalie character, sleek dragon horns, iridescent scales, "
+            "reptilian slit eyes, subtle frills, epic fantasy digital art, "
+            "dramatic lighting, highly detailed scales texture, masterpiece"
+        ),
     },
     "bunny": {
         "label": "Зайчик",
         "emoji": "🐰",
-        "animal": "bunny",
-        "prompt_extra": "bunny furry, long rabbit ears, soft white fur, bunny nose, cottontail, cute style, anthropomorphic bunny character",
+        "prompt": (
+            "anthropomorphic bunny rabbit character, long upright rabbit ears, soft fluffy fur, "
+            "cute bunny nose, big expressive innocent eyes, sweet pastel colors, "
+            "whimsical fantasy furry artwork, high detail"
+        ),
     },
 }
 
-
-def analyze_photo_with_gemini(image_bytes: bytes) -> str:
-    """Use Gemini free vision to describe the person in the photo."""
-    if not GEMINI_API_KEY or GEMINI_API_KEY == "your_api_key_here":
-        return ""
-
-    try:
-        img_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-
-        payload = {
-            "contents": [{
-                "parts": [
-                    {
-                        "inline_data": {
-                            "mime_type": "image/jpeg",
-                            "data": img_b64
-                        }
-                    },
-                    {
-                        "text": (
-                            "Describe this person's appearance for use in a furry art prompt. "
-                            "Include: hair color, approximate age range (young/adult/etc), "
-                            "clothing style, pose, expression, and any notable features. "
-                            "Keep it short, 1-2 sentences, focus on visual details. "
-                            "Reply in English only."
-                        )
-                    }
-                ]
-            }],
-            "generationConfig": {"maxOutputTokens": 150}
-        }
-
-        resp = requests.post(url, json=payload, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            description = data["candidates"][0]["content"]["parts"][0]["text"]
-            return description.strip()
-    except Exception:
-        pass
-
-    return ""
+NEGATIVE_PROMPT = (
+    "human ears, human skin, human nose, photographic human, duplicate, watermark, signature, "
+    "text, low quality, distorted anatomy, extra limbs, bad eyes, blur, mutated, ugly, poorly drawn"
+)
 
 
-def build_prompt(style: dict, person_description: str) -> str:
-    """Build a detailed furry art prompt."""
-    base = (
-        f"anthropomorphic {style['animal']} character, {style['prompt_extra']}, "
-        "high quality digital furry art, detailed fur texture, vibrant colors, "
-        "clean lineart, professional furry fandom artwork, 4k"
-    )
-
-    if person_description:
-        base = f"{base}, inspired by person: {person_description}"
-
-    negative = (
-        "ugly, deformed, bad anatomy, blurry, low quality, "
-        "watermark, text, human face, realistic human, photo"
-    )
-
-    return base, negative
-
-
-def generate_with_pollinations(prompt: str) -> bytes:
-    """Call Pollinations.AI and return image bytes."""
-    encoded = urllib.parse.quote(prompt)
-    seed = random.randint(1, 999999)
-
-    # No width/height/model — use defaults (free tier)
-    url = f"https://image.pollinations.ai/prompt/{encoded}?seed={seed}"
-
-    resp = requests.get(url, timeout=120)
-
-    if resp.status_code == 402:
-        raise Exception("Лимит: 1 картинка каждые 45 секунд. Подождите немного и попробуйте снова.")
-
-    resp.raise_for_status()
-    return resp.content
+def prepare_image_b64(image_bytes: bytes) -> str:
+    """Оптимизация размера изображения под модель (макс 1024x1024, JPEG)."""
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    
+    # SDXL лучше всего работает с размерами кратно 64 (например 1024x1024 или 768x768)
+    img.thumbnail((1024, 1024), Image.LANCZOS)
+    
+    # Подгоняем под кратность 64
+    w = (img.width // 64) * 64
+    h = (img.height // 64) * 64
+    w = max(512, w)
+    h = max(512, h)
+    img = img.resize((w, h), Image.LANCZOS)
+    
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    return base64.b64encode(buf.getvalue()).decode("utf-8")
 
 
 def generate_furry_art(image_bytes: bytes, style_key: str) -> dict:
+    """Настоящий img2img через Segmind SDXL."""
+    if not SEGMIND_API_KEY or SEGMIND_API_KEY == "your_segmind_key_here":
+        return {"error": "API ключ Segmind не настроен. Добавьте SEGMIND_API_KEY в файл .env"}
+
     style = FURRY_STYLES.get(style_key, FURRY_STYLES["classic"])
 
     try:
-        # Step 1: Resize the uploaded photo
-        img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-        img.thumbnail((800, 800), Image.LANCZOS)
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85)
-        img_bytes_small = buf.getvalue()
+        # Подготовка фото
+        img_b64 = prepare_image_b64(image_bytes)
 
-        # Step 2: Analyze photo with Gemini (free) to get person description
-        person_desc = analyze_photo_with_gemini(img_bytes_small)
-
-        # Step 3: Build prompt
-        prompt, negative = build_prompt(style, person_desc)
-
-        # Step 4: Generate with Pollinations.AI
-        result_bytes = generate_with_pollinations(prompt)
-
-        result_b64 = base64.b64encode(result_bytes).decode("utf-8")
-
-        return {
-            "success": True,
-            "image": result_b64,
-            "mime_type": "image/jpeg",
-            "style_label": style["label"],
-            "style_emoji": style["emoji"],
-            "description": f"Описание фото: {person_desc}" if person_desc else "",
+        # Параметры img2img
+        payload = {
+            "image": img_b64,
+            "prompt": style["prompt"],
+            "negative_prompt": NEGATIVE_PROMPT,
+            "samples": 1,
+            "scheduler": "dpmpp_2m",
+            "num_inference_steps": 25,
+            "guidance_scale": 7.5,
+            # strength определяет, насколько сильно меняется фото:
+            # 0.68 идеально: лицо и форма человека перерисовываются в персонажа, но сохраняется поза и композиция
+            "strength": 0.68,
+            "base64": True
         }
 
-    except requests.exceptions.ConnectionError:
-        return {"error": "Нет соединения с сервером генерации. Проверьте интернет."}
+        headers = {
+            "x-api-key": SEGMIND_API_KEY,
+            "Content-Type": "application/json"
+        }
+
+        resp = requests.post(SEGMIND_URL, json=payload, headers=headers, timeout=120)
+
+        if resp.status_code == 200:
+            content_type = resp.headers.get("content-type", "")
+            
+            # Если вернулся JSON с base64
+            if "application/json" in content_type:
+                data = resp.json()
+                img_result_b64 = data.get("image", "")
+            else:
+                # Если вернулась чистая картинка байтами
+                img_result_b64 = base64.b64encode(resp.content).decode("utf-8")
+
+            return {
+                "success": True,
+                "image": img_result_b64,
+                "mime_type": "image/jpeg",
+                "style_label": style["label"],
+                "style_emoji": style["emoji"],
+                "description": "Сгенерировано на базе вашего фото (SDXL Image-to-Image)",
+            }
+
+        elif resp.status_code == 401 or resp.status_code == 403:
+            return {"error": "Неверный API ключ Segmind. Проверьте SEGMIND_API_KEY в файле .env"}
+        elif resp.status_code == 429:
+            return {"error": "Превышен лимит запросов Segmind или закончились бесплатные кредиты на сегодня."}
+        else:
+            try:
+                err_text = resp.json().get("message", resp.text)
+            except Exception:
+                err_text = resp.text
+            return {"error": f"Ошибка Segmind API ({resp.status_code}): {err_text}"}
+
     except requests.exceptions.Timeout:
-        return {"error": "Таймаут — сервер не ответил. Попробуйте снова."}
+        return {"error": "Таймаут — сервер Segmind не ответил вовремя. Попробуйте снова."}
+    except requests.exceptions.ConnectionError:
+        return {"error": "Ошибка подключения к сети. Проверьте интернет."}
     except Exception as e:
         return {"error": f"Ошибка генерации: {str(e)}"}
 
@@ -193,13 +184,12 @@ def generate():
     if file.filename == "":
         return jsonify({"error": "Выберите файл"}), 400
 
+    image_bytes = file.read()
     style_key = request.form.get("style", "classic")
     if style_key not in FURRY_STYLES:
         style_key = "classic"
 
-    image_bytes = file.read()
     result = generate_furry_art(image_bytes, style_key)
-
     if "error" in result:
         return jsonify(result), 500
 
@@ -213,26 +203,23 @@ def get_styles():
 
 @app.route("/health")
 def health():
+    has_key = bool(SEGMIND_API_KEY and SEGMIND_API_KEY != "your_segmind_key_here")
     return jsonify({
         "status": "ok",
-        "api_configured": True,  # Pollinations.AI doesn't need a key
-        "gemini_key": bool(GEMINI_API_KEY and GEMINI_API_KEY != "your_api_key_here"),
-        "generator": "pollinations.ai"
+        "api_configured": has_key,
+        "engine": "Segmind SDXL Img2Img"
     })
 
 
 if __name__ == "__main__":
     print("=" * 55)
-    print("  FurryArt AI — Pollinations.AI Edition")
+    print("  🐾 FurryArt AI — Segmind SDXL Img2Img Edition")
     print("=" * 55)
-    has_gemini = bool(GEMINI_API_KEY and GEMINI_API_KEY != "your_api_key_here")
-    if has_gemini:
-        print("  Gemini API: есть (анализ фото включён)")
+    if not SEGMIND_API_KEY or SEGMIND_API_KEY == "your_segmind_key_here":
+        print("  ⚠️  Внимание: SEGMIND_API_KEY не установлен!")
+        print("  Получить бесплатно: https://www.segmind.com/api-keys")
     else:
-        print("  Gemini API: нет (базовый режим)")
-    print("  Генерация: Pollinations.AI (бесплатно)")
-    print("=" * 55)
-    print("  Открыть: http://localhost:5000")
+        print("  ✅  Segmind API ключ подключен!")
     print("=" * 55)
     port = int(os.environ.get("PORT", 5000))
     app.run(debug=False, host="0.0.0.0", port=port)
